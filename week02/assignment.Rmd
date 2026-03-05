@@ -1,0 +1,105 @@
+---
+title: "Assignment - Week 02"
+author: "Yara Roth"
+date: "2026-04-04"
+output: html_document
+---
+## Exercise 1: 
+### Setup
+```{r setup}
+suppressPackageStartupMessages({
+  library(AnnotationHub)
+  library(ensembldb)
+  library(GenomicRanges)
+  library(epiwraps)
+})
+```
+
+### Mouse ensdb
+```{r mouse_ensdb}
+ah <- AnnotationHub()
+query_results <- query(ah, c("Mus Musculus", "EnsDb","102","GRCm38"))
+head(query_results)
+
+ensdb_m <- ah[["AH89211"]]
+ensdb_m
+```
+
+### Mouse genome sequence
+```{r mouse_genome}
+query_results <- query(ah, c("Mus Musculus","TwoBitFile","102","GRCm38"))
+head(query_results)
+```
+
+there are different entries (cdna, dna_rm,dna_sm) -> so we need to specify dna_sm when retireving it:
+
+```{r mouse_genome_dnasm}
+query_results <- query(ah, c("Mus Musculus","TwoBitFile","102","GRCm38","dna_sm"))
+head(query_results)
+genome_m <- ah[["AH88477"]]
+```
+
+### Drosophila genome sequence
+```{r drosophila_genome}
+query_results <- query(ah, c("Drosophila melanogaster","TwoBitFile","dna_sm","BDGP6"))
+head(query_results)
+```
+
+we again have multiple entires, so we can look at the dates the genome were added (we will pick the latest one)
+
+```{r drosophila_genome_latest}
+mcols(query_results)[, c("title", "rdatadateadded")]
+query_results[length(query_results)]
+genome_d <- ah[["AH106160"]]
+```
+
+## Exercise 2:
+### Extract the number of (unique) gene IDs and symbols:
+I'll first inspect the genes(ensdb_m)
+```{r inspect_ensdb_m}
+mouse_genes <- genes(ensdb_m)
+mcols(mouse_genes)
+```
+
+Now we only select the protein coding genes and extract the number of unique gene IDs and gene symbols
+
+```{r pcg_mouse}
+mouse_pqg <- genes(ensdb_m, filter=~gene_biotype=="protein_coding")
+length(mouse_pqg)
+
+number_gene_id <- length(unique(mouse_pqg$gene_id))
+number_symbol <- length(unique(mouse_pqg$symbol))
+```
+
+Number of unique gene IDs: `r number_gene_id`  
+Number of unique gene symbols `r number_symbol`  
+There are less unique gene symbols than gene ids, meaning that some of the symbols are not unique. 
+
+### Plot the distribution of (spliced) transcript length
+```{r length transcripts}
+# we can group the exons by transcript, meaning each transcript has a list of exons organized together:
+mouse_exons <- exonsBy(ensdb_m,filter=~gene_biotype=="protein_coding")
+
+# this shows me the length of the individual exon in a certain transcript: 
+mouse_exon_lengths <- width(mouse_exons)
+
+# therefore we can add up the individual exon length, resulting in total transcript length
+mouse_transcript_lengths <- sum(width(mouse_exons))
+head(mouse_transcript_lengths)
+```
+
+```{r histogram}
+hist(mouse_transcript_lengths,
+     main="Distribution of the length of protein-coding transcripts",
+     xlab="Length Transcripts [bp]",
+     col="#8DBBDC",
+     breaks=50)
+```
+
+The histogram looks very broad, so I'll check the maximal length of transcript we have to see whether that is really needed.
+
+```{r}
+max(mouse_transcript_lengths)
+```
+
+Indeed we have transcripts up to a length of 123179 bp meaning I'll leave the histogram as it is. 
