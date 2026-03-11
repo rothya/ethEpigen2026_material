@@ -1,0 +1,199 @@
+---
+title: "Assignment - Week 03"
+author: "Yara Roth"
+date: "2026-03-09"
+output: html_document
+---
+# Code
+
+## Setup
+```{r setup}
+suppressPackageStartupMessages({
+  library(AnnotationHub)
+  library(Rsubread)
+  library(rtracklayer)
+  library(Biostrings)
+  library(Rfastp)
+  library(epiwraps)
+})
+ah <- AnnotationHub()
+
+library(rstudioapi)
+setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
+```
+
+## Download ChiP-seq for CTCF protein
+```{r download_fastqz}
+dir.create("data")
+dir.create("data/raw")
+
+if (!file.exists("data/raw/ctcf_input.fastq.gz")) {
+  download.file("https://www.encodeproject.org/files/ENCFF127RRR/@@download/ENCFF127RRR.fastq.gz", "data/raw/ctcf_input.fastq.gz", timeout = 5000)
+} else {
+  print("File already exists.")
+}
+```
+
+## Quality Control and Trimming
+
+### Quality Control
+Now we will perform quality control, to look at the quality of the reads.
+I did perform this directly in my terminal.
+
+```{bash engine.opts='-l', eval=FALSE}
+mkdir -p data/raw_fastqc
+fastqc -o data/raw_fastqc --threads 4 data/raw/*.fastq.gz
+```
+
+The html file with the results can be found in ``week03/data/raw_fastqc/``.  
+The quality of the reads is not optimal, we have a mean quality score of ~23, with increasing variability towards the end of the reads. No adapter sequences were identified.
+
+### Trimming
+
+```{r qc-trimming}
+dir.create("data/rfastp.trimmed")
+qc <- Rfastp::rfastp(
+  read1="data/raw/ctcf_input.fastq.gz",
+  thread=4,
+  overrepresentationAnalysis=TRUE,
+  adapterTrimming = TRUE,
+  outputFastq="data/rfastp.trimmed/ctcf_trimmed"
+)
+```
+
+Reads get trimmed if mean quality drops below 20 for a bp window of 4 or if an adapter gets detected. 
+98.26% passed the filtering, meaning they had sufficient quality (less than 40% bases below Q15) and had a goon N content.
+
+```{r}
+Rfastp::curvePlot(qc, curve="content_curves")
+```
+
+```{r}
+Rfastp::curvePlot(qc, curve="quality_curves")
+```
+
+## Alignment
+Now we want to get the genome sequence for the drosophila melangaster in a TwoBit format for BDGP6 (we already downloaded it last week).
+We will use the latest available genome.
+
+### Retrieving drosophila genome
+```{r drosophila_genome}
+query_results <- query(ah, c("Drosophila melanogaster","TwoBitFile","dna_sm","BDGP6"))
+
+mcols(query_results)[, c("title", "rdatadateadded")]
+query_results[length(query_results)]
+genome_d <- ah[["AH106160"]]
+
+dir.create("data/BDGP6_genome")
+export(import.2bit(genome_d), "data/BDGP6_genome/genome.fasta.gz", compress=TRUE)
+```
+
+### Building Genome Index
+
+Now we will build the genome index based on our BDGP6 genome, which will allow us to map/align the reads.
+
+```{r}
+if (!file.exists("data/BDGP6_genome/rsubread.files")) {
+  Rsubread::buildindex("data/BDGP6_genome/rsubread", reference="data/BDGP6_genome/genome.fasta.gz")
+} else {
+  message("Index already built.")
+}
+```
+
+### Alignment
+
+Now we will perform the mapping.
+
+```{r alignment}
+dir.create("data/aligned")
+align.stats <- Rsubread::align(
+  index="data/BDGP6_genome/rsubread",
+  type="dna",
+  readfile1="data/rfastp.trimmed/ctcf_trimmed_R1.fastq.gz",output_file="data/aligned/ctcf.bam",
+  nthreads=6,
+  sortReadsByCoordinates=TRUE
+)
+align.stats
+```
+
+We have a mappability of 91.8% which is very high. The bam file can be found in ``data/aligned/ctcf.bam``.
+
+## Peak calling
+```{r MACSr-installation}
+BiocManager::install("MACSr")
+library(MACSr)
+```
+
+Now we will extract the peaks and their supplementary information (location) using: 
+```{r peak-calling}
+dir.create("data/peaks")
+callpeak(
+  tfile="data/aligned/ctcf.bam",
+  gsize="dm",
+  outdir = "data/peaks",
+  name = "ctcf"
+)
+
+peaks <- rtracklayer::import("data/peaks/ctcf_peaks.narrowPeak", format="narrowPeak")
+peaks
+```
+
+# Report
+## Mappability
+3'505'377 out of total 3'816'999 reads were mapped, which corresponds to a mappability of 91.8%.
+
+## Number of identified peaks
+A total of 5405 peaks were identified for the protein CTCF. 
+
+## Peak Signal inside a gene
+To identify peaks that lie within a gene, we first need to extract the genes from the drosophila EnsDb.
+
+```{r download-drosophila-ensdb}
+query_results <- query(ah, c("Drosophila","EnsDb","BDGP6"))
+query_results[length(query_results)]
+ensdb_d <- ah[["AH119285"]]
+```
+
+```{r retireve-genes}
+genes_d <- genes(ensdb_d)
+head(genes_d)
+```
+
+When I tried to extract the peaks that lie within a gene, I got a warning that I have a mismatch between the naming conventions of peaks and genes_d. I tried to solve it with the following chunk. Unfortunately, I still received a warning after and did not manage to resolve the issue completely. Maybe we could look at that in the lecture.
+```{r}
+seqlevelsStyle(peaks) <- seqlevelsStyle(genes_d)
+```
+
+```{r peaks-in-genes}
+peaks_in_genes <- suppressWarnings(peaks[overlapsAny(peaks, genes_d, type="within")])
+peaks_in_genes
+```
+
+Now i will select the biggest peak we have (so the one with the highest score).
+
+```{r peak-selection}
+biggest_peak_idx <- which.max(peaks_in_genes$score)
+biggest_peak <- peaks_in_genes[biggest_peak_idx]
+```
+
+Next I'll extraxt the name of the gene, in which the peak is located.
+```{r identify-name-gene}
+gene_idx <- suppressWarnings(subjectHits(findOverlaps(biggest_peak, genes_d)))
+gene_name <- genes_d[gene_idx]$gene_name
+gene_name
+```
+
+And lastly we can plot everything:
+```{r peak-plot}
+plotSignalTracks(
+  list(ctcf = "data/aligned/ctcf.bam"),
+  region = biggest_peak,
+  extend = 500,
+  genomeAxis = TRUE,
+  ensdb = ensdb_d,
+  transcripts = "full",
+  main = paste("CTCF peaks inside the", gene_name, "gene")
+)
+```
+
+
