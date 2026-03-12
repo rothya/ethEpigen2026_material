@@ -27,11 +27,9 @@ setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
 dir.create("data")
 dir.create("data/raw")
 
-if (!file.exists("data/raw/ctcf_input.fastq.gz")) {
-  download.file("https://www.encodeproject.org/files/ENCFF127RRR/@@download/ENCFF127RRR.fastq.gz", "data/raw/ctcf_input.fastq.gz", timeout = 5000)
-} else {
-  print("File already exists.")
-}
+
+download.file("https://www.encodeproject.org/files/ENCFF127RRR/@@download/ENCFF127RRR.fastq.gz", "data/raw/ctcf_input.fastq.gz", timeout = 5000)
+
 ```
 
 ## Quality Control and Trimming
