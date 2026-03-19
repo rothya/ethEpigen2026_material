@@ -1,0 +1,262 @@
+---
+title: "Assignment - Week 04"
+author: "Yara Roth"
+date: "2026-03-15"
+output: html_document
+---
+# Setup
+
+```{r setup}
+suppressPackageStartupMessages({
+  library(AnnotationHub)
+  library(rtracklayer)
+  library(epiwraps)
+  library(GenomicRanges)
+  library(pheatmap)
+})
+ah <- AnnotationHub()
+
+library(rstudioapi)
+setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
+```
+
+# Download
+## Download Narrow Peak Files
+I downloaded the data from the mouse strain, namely, ES-Bruce4. 
+
+```{r download-eESC}
+#p300 eMSC
+download.file("https://www.encodeproject.org/files/ENCFF653YVR/@@download/ENCFF653YVR.bed.gz", "data/p300_mESC_narrowPeak.bed.gz")
+
+#H3K27ac
+download.file("https://www.encodeproject.org/files/ENCFF212HAG/@@download/ENCFF212HAG.bed.gz", "data/H3K27ac_mESC_narrowPeak.bed.gz")
+
+#H3K27me3
+download.file("https://www.encodeproject.org/files/ENCFF105NKG/@@download/ENCFF105NKG.bed.gz", "data/H3K27me3_mESC_narrowPeak.bed.gz")
+```
+
+I decided to use the data from heart samples. I chose the data from the mouse strain B6NCrl, from which adult heart tissue was obtained at 2 months.
+```{r download-heart}
+#p300
+download.file("https://www.encodeproject.org/files/ENCFF097ULJ/@@download/ENCFF097ULJ.bed.gz", "data/p300_heart_narrowPeak.bed.gz")
+
+#H3K27ac
+download.file("https://www.encodeproject.org/files/ENCFF723ZZS/@@download/ENCFF723ZZS.bed.gz", "data/H3K27ac_heart_narrowPeak.bed.gz")
+
+#H3K27me3
+download.file("https://www.encodeproject.org/files/ENCFF183KJW/@@download/ENCFF183KJW.bed.gz", "data/H3K27me3_heart_narrowPeak.bed.gz")
+```
+
+```{r importing-files}
+peakfiles <- list.files("data", full.names = TRUE)
+names(peakfiles) <- gsub("\\.bed\\.gz","",basename(peakfiles))
+peaks <- lapply(peakfiles, FUN=rtracklayer::import, format="narrowPeak")
+```
+
+Next we will perform pruning. This removes non-standard chromosomes that don't exist in both datasets, preventing mismatch errors when comparing overlaps (which would cause problems in tss_proportion calculations).
+
+```{r peak-pruning}
+peaks <- lapply(peaks, GenomeInfoDb::keepStandardChromosomes, pruning.mode = "coarse")
+```
+
+## Downlaod mouse Ensdb
+```{r download-ensdb}
+query_results <- query(ah, c("Mus Musculus", "EnsDb","GRCm38","102"))
+query_results
+ensdb_m <- ah[["AH89211"]]
+```
+
+We also have to perform pruning on the Ensdb. Additionally we change the naming convention to UCSC, otherwise there will be an error in the comparison of ensdb and the peak. 
+
+```{r chromosome}
+genes_m <- genes(ensdb_m)
+genes_m <- GenomeInfoDb::keepStandardChromosomes(genes_m, pruning.mode = "coarse")
+
+seqlevelsStyle(genes_m) <- "UCSC"
+all(seqlevels(peaks[[1]]) %in% seqlevels(genes_m))
+```
+
+
+# Question 1: TSS and H3K27ac, H3K27me3 overlaps
+
+```{r extract-peaks}
+peak_H3K27ac_mesc <- peaks$H3K27ac_mESC_narrowPeak
+peak_H3K27me3_mesc <- peaks$H3K27me3_mESC_narrowPeak
+
+peak_H3K27ac_heart <- peaks$H3K27ac_heart_narrowPeak
+peak_H3K27me3_heart <- peaks$H3K27me3_heart_narrowPeak
+```
+
+Here I first calculated the proportion of H3K27ac or H3K27me3 that lies within a TSS region - the question was however what proportion of TSS overlap with H3K27ac or H3K27me3.
+
+```{r H3K27ac/H3K27me3-overlap}
+peak_names <- c("H3K27ac_mESC_narrowPeak", "H3K27me3_mESC_narrowPeak", 
+                "H3K27ac_heart_narrowPeak", "H3K27me3_heart_narrowPeak")
+
+tss_proportions <- sapply(peak_names, function(name) {
+  peak_data <- peaks[[name]]
+  peaks_annotated <- annotateRegions(peak_data, ensdb_m)
+  sum(peaks_annotated$class == "TSS") / length(peaks_annotated)
+})
+tss_proportions
+```
+
+To answer the question right, we need to:  
+We first extract the number of total TSS regions. Then count how many peaks of each signal lie within a TSS region and divide it by the number of total TSS -> proportion of TSS that overlap with H3K27ac or H3K27me3.
+
+```{r TSS-overlap}
+tss_sites <- promoters(genes_m, upstream = 0, downstream = 1)
+length(tss_sites)
+
+peak_names <- c("H3K27ac_mESC_narrowPeak", "H3K27me3_mESC_narrowPeak", 
+                "H3K27ac_heart_narrowPeak", "H3K27me3_heart_narrowPeak")
+
+tss_proportions <- sapply(peak_names, function(name) {
+  peak_data <- peaks[[name]]
+  sum(countOverlaps(tss_sites, peak_data) > 0) / length(tss_sites)
+})
+tss_proportions
+```
+
+```{r TSS-combined-overlap}
+tss_both_mESC <- {
+  h3k27ac_peaks <- peaks[["H3K27ac_mESC_narrowPeak"]]
+  h3k27me3_peaks <- peaks[["H3K27me3_mESC_narrowPeak"]]
+  
+  sum((countOverlaps(tss_sites, h3k27ac_peaks) > 0) & 
+      (countOverlaps(tss_sites, h3k27me3_peaks) > 0)) / length(tss_sites)
+}
+
+tss_both_heart <- {
+  h3k27ac_peaks <- peaks[["H3K27ac_heart_narrowPeak"]]
+  h3k27me3_peaks <- peaks[["H3K27me3_heart_narrowPeak"]]
+  
+  sum((countOverlaps(tss_sites, h3k27ac_peaks) > 0) & 
+      (countOverlaps(tss_sites, h3k27me3_peaks) > 0)) / length(tss_sites)
+}
+
+tss_proportions
+tss_both_mESC
+tss_both_heart
+```
+
+### H3K27ac overlap with TSS in embryonic stem cells vs differentiated heart cells
+The proportion of TSS peaks that overlap with H3K27ac in embryonic stem cells is `r round(tss_proportions["H3K27ac_mESC_narrowPeak"], 3)`.  
+
+The proportion of TSS that overlap with H3K27ac in differentiated heart cells is `r round(tss_proportions["H3K27ac_heart_narrowPeak"], 3)`.
+
+### H3K27me3 overlap with TSS in embryonic stem cells vs differentiated heart cells
+The proportion of TSS that overlap with H3K27me3 in embryonic stem cells is `r round(tss_proportions["H3K27me3_mESC_narrowPeak"], 3)`.  
+
+The proportion of TSS that overlap with H3K27me3 in differentiated heart cells is `r round(tss_proportions["H3K27me3_heart_narrowPeak"], 3)`.
+
+### Combined H3K27ac and H3K27me3 with TSS in embryonic stem cells vs differentiated heart cells
+The proportion of TSS that overlaps with both H3K27ac and H3K27me in embryonic stem cells is `r round(tss_both_mESC)`.  
+The proportion of TSS that overlaps with both H3K27ac and H3K27me in differentiated heart cells is `r round(tss_both_heart)`.  
+
+### Interpretation
+The differentiated heart cells show a higher degree of TSS with H3K27 acetylation, and around the same with H3K27 tri-methylation (compared to the mESC). It is possible that these cells concentrate their activators at TSS to induce cell type specific gene expression.
+
+The embryonic stem cells on the other hand show a lower proportion of TSS with acetylation, and around the same degree of H3K27 tri-methylation. It is possible that their epigenetic regulators are more distributed over the whole genome, and not necessarily concentrated at TSS, representing a less specific cellular identity.
+
+When looking at the combination of both: H3K27ac and H3K27me3 are nearly mutually exclusive at TSS, confirming their opposing functions.
+
+# Question 2: Relationship between the 3 signals (p300, H3K27ac, and H3K27me3)
+
+## Embryonic Stem Cells
+### Heatmap
+In the heatmap we see that p300 has a high overlap with H3K27ac, while p300 has very little overlap with H2K27me3. P300 is a histone acetyltransferase, therefore the high degree of overlap with H3K27ac makes sense. Also the overlap of H3K27me3 and H2K27ac is very low, which also makes sense, as they are opposing regulatory states.
+
+```{r heatmap_mesc}
+peaks_esc <- peaks[grep("mESC", names(peaks))]
+names(peaks_esc) <- gsub("_mESC_narrowPeak", "", names(peaks_esc))
+regionOverlaps(peaks_esc)
+```
+
+I also generate a heatmap where we see the fraction of the overlaps, as this will be useful for the heart and mESC comparison.
+
+```{r}
+peaks_esc_pairwise <- sapply(names(peaks_esc), function(i) {
+  sapply(names(peaks_esc), function(j) {
+    sum(overlapsAny(peaks_esc[[i]], peaks_esc[[j]])) / length(peaks_esc[[i]])
+  })
+})
+blue_palette <- colorRampPalette(c("white", "steelblue"))(100)
+
+pheatmap::pheatmap(peaks_esc_pairwise,
+                   display_numbers = TRUE,
+                   number_color ="black",
+                   main = "Pairwise peak overlaps - mESC",
+                   color=blue_palette)
+```
+
+### Upset Plot
+The upset plot allows us to additionally look at the occurance of all three markers. As already infered by the pariwise comparison in the heatmap, we have almost no co-occurance of all three markers. And also here we see a high overlap of p300 and H3K27ac.
+
+```{r upset-plot-mesc}
+tmp <- regionsToUpset(peaks_esc, nsets=length(peaks_esc))
+UpSet(make_comb_mat(regionsToUpset(peaks_esc, nsets=length(peaks_esc))))
+```
+
+## Heart
+### Heatmap
+Generally we see the same pattern here. P300 has a high overlap with H3K27ac, while p300 has very little overlap with H2K27me3. Also the overlap of H3K27me3 and H2K27ac is very low.
+
+```{r heatmap-heart}
+peaks_heart <- peaks[grep("heart", names(peaks))]
+names(peaks_heart) <- gsub("_heart_narrowPeak", "", names(peaks_heart))
+regionOverlaps(peaks_heart)
+```
+
+```{r}
+peaks_heart_pairwise <- sapply(names(peaks_heart), function(i) {
+  sapply(names(peaks_heart), function(j) {
+    sum(overlapsAny(peaks_heart[[i]], peaks_heart[[j]])) / length(peaks_heart[[i]])
+  })
+})
+blue_palette <- colorRampPalette(c("white", "steelblue"))(100)
+
+pheatmap::pheatmap(peaks_heart_pairwise,
+                   display_numbers = TRUE,
+                   number_color ="black",
+                   main = "Pairwise peak overlaps - Heart",
+                   color=blue_palette)
+```
+
+### Upset Plot
+The heart shows a slight higher proportion of H3K27me3 compared to the mESC cells. This could also indicate that the mESC generally have a more open chromatin state and accessible genome than the heart cells. 
+
+```{r upset-plot-heart}
+tmp <- regionsToUpset(peaks_heart, nsets=length(peaks_esc))
+UpSet(make_comb_mat(regionsToUpset(peaks_heart, nsets=length(peaks_heart))))
+```
+
+# Question 3: Active Regulatory Elements between Tissues
+To compare the active regulatory elements across tissues, i checked which H3k27ac mESC peak overlap with the heart H3k27ac peaks (so you can assess which regulatory signals are conserved across both states).
+
+## H3k27ac
+```{r}
+h3k27ac_shared <- sum(overlapsAny(peaks$H3K27ac_mESC_narrowPeak,peaks$H3K27ac_heart_narrowPeak)) / length(peaks$H3K27ac_mESC_narrowPeak)
+
+h3k27ac_shared
+```
+
+`r round(h3k27ac_shared, 3)` of mESC H3K27ac peaks are also present in heart tissue, indicating these regulatory elements are conserved across both samples. These regulatory regions might be regulating constitutively active genes essential for basic cellular functions (e.g housekeeping genes).
+
+## H3k27ac and p300
+As p300 and H3K27ac often appear together, I wanted to check whether co-appearing peaks in the mESC are preserved in the heart sample as well.
+
+```{r}
+# p300 peaks in mESC that overlap with H3K27ac in mESC
+p300_h3k27ac_mesc <- peaks$p300_mESC_narrowPeak[overlapsAny(peaks$p300_mESC_narrowPeak,peaks$H3K27ac_mESC_narrowPeak)]
+
+# p300 peaks in heart that overlap with H3K27ac in heart
+p300_h3k27ac_heart <- peaks$p300_heart_narrowPeak[overlapsAny(peaks$p300_heart_narrowPeak,peaks$H3K27ac_heart_narrowPeak)]
+
+# proportion of combined mESC peaks are preserved in heart
+combined_shared <- sum(overlapsAny(p300_h3k27ac_mesc, p300_h3k27ac_heart)) / length(p300_h3k27ac_mesc)
+
+combined_shared
+```
+
+Also here we have a proportion of active regulatory elements that are conserved between both samples. `r round(combined_shared, 3)` of mESC p300+h3k27ac peaks are also present in heart tissue, indicating these regulatory elements are conserved across both samples. It however also means that `r 1-round(combined_shared, 3)` of the combined peaks that were present in the mESC are no longer present in the heart cells - these might have been genes that were actively downregulated to induce a cell type specific transcription program. 
