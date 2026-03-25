@@ -1,0 +1,208 @@
+---
+title: "Assignment - Week 05"
+author: "Yara Roth"
+date: "2026-03-25"
+output: html_document
+---
+
+# Setup
+```{r setup}
+suppressPackageStartupMessages({
+  library(GenomicRanges)
+  library(SummarizedExperiment)
+  library(edgeR) # differential gene expression using neg.bin stats
+  library(epiwraps)
+  library(ggplot2)
+  library(sechm) # for plotting (features*samples) heatmaps
+})
+
+library(rstudioapi)
+setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
+```
+
+# Download
+Our data is already available as SummarizedExperiment object, meaning the peaks were already called and counted (no need for peak calling).
+
+```{r download-data}
+dir.create("data")
+download.file("https://ethz-ins.org/content/mouse_mm38_hippocampus.peakCounts.SE.rds", "data/hippo_peaks.SE.rds")
+
+se <- readRDS("data/hippo_peaks.SE.rds")
+head(se)
+colData(se)
+```
+
+# Differential Analysis
+We will first add a new column to our dataframe attributing the condition (FSS/Control) and sex (male/female).
+
+```{r adding-condition-sex-dataframing}
+se$condition <- ifelse(grepl("Control", colnames(se)), "Control", "FSS")
+se$sex <- ifelse(grepl("female", colnames(se)), "female", "male")
+
+colData(se)
+```
+
+For the heatmap generation we'll get an error because `se`has no rownames, so we'll attribute rownames:
+
+```{r}
+rownames(se) <- as.character(rowRanges(se))
+head(rownames(se))
+```
+
+## DE for condition (FSS vs Control) - controlling for sex
+As we have both the condition and sex in our data, we should ideally use the glm apporach to account for sex or condition as a covariate.  
+For the differential analysis on condition, we account for sex as a covariate.
+
+```{r DE-condition}
+dds <- edgeR::DGEList(assay(se), group=se$condition)
+mm <- model.matrix(~condition + sex, data=as.data.frame(colData(se)))
+
+# as we can use TMM normalization:
+dds <- edgeR::calcNormFactors(dds)
+dds <- estimateDisp(dds, mm)
+fit <- glmQLFit(dds, mm)
+et_condition <- as.data.frame(topTags(glmQLFTest(fit, coef=2), Inf))
+
+head(et_condition)
+```
+
+To quickly assess our results we can look at the following volcano plot:
+
+```{r ggplot-condition}
+ggplot(et_condition, aes(logFC, -log10(FDR))) + 
+  geom_point(aes(color = ifelse(-log10(FDR) > -log10(0.05) & abs(logFC) > log2(2), 
+                                 ifelse(logFC > 0, "red", "blue"), 
+                                 "grey"))) +
+  geom_hline(yintercept = -log10(0.05),
+             linetype = "dashed") + 
+  geom_vline(xintercept = c(log2(0.5), log2(2)),
+             linetype = "dashed") +
+  scale_x_continuous(breaks = seq(-10, 10, 2),
+                     limits = c(-10, 10)) +
+  scale_color_identity() +
+  labs(title = "Volcano plot: Condition (FSS vs Control)",
+       x = "Log2 Fold Change",
+       y = "-Log10(FDR)") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"))
+```
+
+Now we will look the the 10 most significant regions:
+
+```{r top-10-condition}
+top10_condition <- head(et_condition, 10)
+top10_condition
+```
+
+If we have a logFC > 0, means that we have a more accessible chromatin region in FSS animals compared to the control. LogFC < 0 are less accessible in FSS animals.  
+Importantly none of the top 10 significant regions are statistically different compared to the control. Maybe this would look different if we don't control for sex (see `next section`).
+
+```{r condition-heatmap}
+# place the normalized data back into our original se object
+assay(se, "logcpm") <- log1p(cpm(dds))
+# then we will plot the 10 most significant regions
+topRegions <- head(row.names(et_condition),10)
+
+# i added a different color code
+metadata(se)$hmcols <- c("darkred", "white", "darkblue")
+sechm(se, topRegions, gaps_at="condition")
+```
+
+Interestingly, in the heatmap we see a higher inter-sample variability in between the control samples compared to the FSS.  
+Maybe in the control animals these generally show a higher variablity. The stress could induce a convergent epigenetic response > upregulating relevant genes, leading to a reduced inter-sample variablity.
+
+
+### DE for condition (FSS vs Control) - NOT controlling for sex
+I also wanted to see whether our DE looks different if we do not control for sex (although I think the right way would be to do so).
+
+```{r DE-condition-nocov}
+dds <- edgeR::DGEList(assay(se), group=se$condition)
+dds <- edgeR::calcNormFactors(dds)
+
+dds <- edgeR::estimateDisp(dds)
+et <- as.data.frame(topTags(exactTest(dds), Inf))
+head(et)
+```
+
+```{r ggplot-condition-nocov}
+ggplot(et, aes(logFC, -log10(FDR))) + 
+  geom_point(aes(color = ifelse(-log10(FDR) > -log10(0.05) & abs(logFC) > log2(2), 
+                                 ifelse(logFC > 0, "red", "blue"), 
+                                 "grey"))) +
+  geom_hline(yintercept = -log10(0.05),
+             linetype = "dashed") + 
+  geom_vline(xintercept = c(log2(0.5), log2(2)),
+             linetype = "dashed") +
+  scale_x_continuous(breaks = seq(-10, 10, 2),
+                     limits = c(-10, 10)) +
+  scale_color_identity() +
+  labs(title = "Volcano plot: Condition (FSS vs Control) - not controlled for sex",
+       x = "Log2 Fold Change",
+       y = "-Log10(FDR)") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"))
+```
+
+```{r top-10-condition-nocov}
+top10_condition_nocov <- head(et, 10)
+top10_condition_nocov
+```
+
+And now indeed we have one region that is significantly more accessible in the stressed samples compared to the controls. But it is important to note that this effect disappears when we control for sex (see `DE for condition (FSS vs Control) - controlling for sex`).
+
+## DE for sex (male vs female)
+For the differential analysis on sex, we account for condition as a covariate.
+
+```{r DE-sex}
+dds <- edgeR::DGEList(assay(se), group=se$sex)
+mm <- model.matrix(~sex + condition, data=as.data.frame(colData(se)))
+
+# as we can use TMM normalization: 
+dds <- edgeR::calcNormFactors(dds)
+dds <- estimateDisp(dds, mm)
+fit <- glmQLFit(dds, mm)
+et_sex <- as.data.frame(topTags(glmQLFTest(fit, coef=2), Inf))
+
+head(et_sex)
+```
+
+To quickly assess our results we can look at the following volcano plot:
+
+```{r ggplot-sex}
+ggplot(et_sex, aes(logFC, -log10(FDR))) + 
+  geom_point(aes(color = ifelse(-log10(FDR) > -log10(0.05) & abs(logFC) > log2(2), 
+                                 ifelse(logFC > 0, "red", "blue"), 
+                                 "grey"))) +
+  geom_hline(yintercept = -log10(0.05),
+             linetype = "dashed") + 
+  geom_vline(xintercept = c(log2(0.5), log2(2)),
+             linetype = "dashed") +
+  scale_x_continuous(breaks = seq(-10, 10, 2),
+                     limits = c(-10, 10)) +
+  scale_color_identity() +
+  labs(title = "Volcano plot: Sex (Female vs Male)",
+       x = "Log2 Fold Change",
+       y = "-Log10(FDR)") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"))
+```
+
+```{r top-10-sex}
+top10_sex <- head(et_sex, 10)
+top10_sex
+```
+
+Here we have several regions that are significantly different accessible in between females and males.
+
+```{r heatmap-sex}
+# place the normalized data back into our original se object
+assay(se, "logcpm") <- log1p(cpm(dds))
+# then we will plot the 10 most significant regions
+topRegions <- head(row.names(et_sex),10)
+
+# then I added a different color code
+metadata(se)$hmcols <- c("darkred", "white", "darkblue")
+sechm(se, topRegions, gaps_at="sex")
+```
+
+The differential analysis on sex reveals clear changes in chromatin accessibility that are located on either X and Y chromosome, which biologically makes a lot of sense. One could additionally filter out the regions located on the X or Y chromosome to look at the differences of autosome chromosomes. 
