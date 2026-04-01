@@ -1,0 +1,142 @@
+---
+title: "Assignment - Week 06"
+author: "Yara Roth"
+date: "2026-04-01"
+output: html_document
+---
+
+# Setup
+```{r setup}
+suppressPackageStartupMessages({
+  library(AnnotationHub)
+  library(GenomicRanges)
+  library(ggplot2)
+  library(memes)
+  library(motifmatchr)
+  library(Biostrings)
+  library(MotifDb)
+  library(TFBSTools)
+  library(universalmotif)
+  library(PWMEnrich)
+  library(GenomeInfoDb)
+})
+
+
+library(rstudioapi)
+setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
+dir.create("data")
+```
+
+# Download
+## Chip-seq data
+I decided to work with Chip-seq data for the TF REST from mouse myocytes.
+
+```{r download-chipseq}
+if(!file.exists("data/myocytes_REST_ENCFF368VWJ.bed.gz")) {
+  download.file("https://www.encodeproject.org/files/ENCFF368VWJ/@@download/ENCFF368VWJ.bed.gz", "data/myocytes_REST_ENCFF368VWJ.bed.gz")
+}
+
+peaks <- rtracklayer::import("data/myocytes_REST_ENCFF368VWJ.bed.gz", format="NarrowPeak")
+
+seqlevelsStyle(peaks) <- "Ensembl"
+```
+
+## Genome sequence
+```{r download-genome}
+ah <- AnnotationHub()
+
+query_results <- query(ah, c("Mus Musculus","TwoBitFile","101","GRCm38","primary_assembly"))
+head(query_results)
+
+genome_m <- ah[["AH84785"]]
+genome_seqs <- import(genome_m)
+```
+
+# Question 1:
+## Motif scanning
+### Getting the desired motif
+We will select the motif for Mus musculus.
+```{r motif-identification}
+motifs <- query(MotifDb, c("REST"))
+names(motifs)
+motif <- motifs[["Mmusculus-HOCOMOCOv10-REST_MOUSE.H10MO.A"]]
+view_motifs(motifs[1:2])
+```
+
+Next we will scan our peaks for motifs, meaning we will go through the peaks and check whether they contain REST motif matches.
+
+```{r motif-scanning-peaks}
+Biostrings::writeXStringSet(genome_seqs, "data/genome.fa")
+motif2 <- convert_motifs(motif, class="TFBSTools-PWMatrix")
+moi <- motifmatchr::matchMotifs(motif2, subject=peaks, genome=Rsamtools::FaFile("data/genome.fa"), out="positions")
+
+moi <- moi[[1]]
+head(moi)
+hist(moi$score)
+```
+
+`moi` is an object that contains every genomic position where a REST motif match was found within a peak.
+Meaning we can now look at the percentage of peaks that contain an overlap with a REST motif.
+
+```{r peaks-motif-proportion}
+overlap <- table(overlapsAny(peaks, moi))
+overlap
+overlap_true <- overlap["TRUE"]
+
+peak_count <- length(peaks)
+peak_motif_proportion <- 100 / peak_count * overlap["TRUE"]
+peak_motif_proportion
+```
+
+**ANSWER QUESTION 1**  
+Of the `r peak_count` peaks, `r overlap_true` (`r peak_motif_proportion`%) contain a motif.
+
+# Question 2:
+## Scanning the whole genome
+
+Now we will scan the whole genome for REST motif matches.
+
+```{r motif-scanning-genome}
+motif_across_genome <- matchMotifs(motif2, subject=genome_seqs, out="positions")[[1]]
+names(motif_across_genome) <- names(genome_seqs)
+motif_across_genome <- as(motif_across_genome, "GRanges")
+head(motif_across_genome)
+```
+
+Now can now look at the percentage of motifs that are occupied by a the transcription factor.
+
+```{r motif-peak-proportion}
+overlap_motif <- table(overlapsAny(motif_across_genome, peaks))
+overlap_motif
+overlap_motif_true <- overlap_motif["TRUE"]
+
+motif_count <- length(motif_across_genome)
+motif_peak_proportion <- 100 / motif_count * overlap_motif["TRUE"]
+motif_peak_proportion
+```
+
+**ANSWER QUESTION 2**  
+Of the `r motif_count` motif sites, `r overlap_motif_true` (`r motif_peak_proportion`%) overlap a peak.
+
+# This was only for me:
+## Enrichment Analysis
+### Preparing sequences
+```{r preparing-sequences}
+quantile(width(peaks))
+peak_centers <- resize(peaks, fix="center", width=100)
+
+peak_seqs <- memes::get_sequence(peak_centers, genome_m)
+peak_seqs
+as.character(peak_seqs[1])
+```
+
+And now we will perform the actual enrichment analysis, meaning we will analyze which motifs are statisically enriched (appear more in peaks than random background).
+
+```{r enrichment-analysis}
+motifs <- query(MotifDb, c("Mmusculus", "HOCOMOCOv10"))
+Sys.setenv(MEME_BIN = "/Users/yararoth/miniconda3/envs/epigen/bin")
+ame <- memes::runAme(peak_seqs, database=convert_motifs(motifs))
+head(ame)
+```
+
+And now we see that the most enriched motif is REST, which confirms that the REST transcription factor actually recognizes and binds to this motif.
