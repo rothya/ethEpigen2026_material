@@ -45,7 +45,7 @@ seqlevelsStyle(peaks) <- "Ensembl"
 ```{r download-genome}
 ah <- AnnotationHub()
 
-query_results <- query(ah, c("Mus Musculus","TwoBitFile","101","GRCm38","primary_assembly"))
+query_results <- AnnotationHub::query(ah, c("Mus Musculus","TwoBitFile","101","GRCm38","primary_assembly"))
 head(query_results)
 
 genome_m <- ah[["AH84785"]]
@@ -89,7 +89,7 @@ peak_motif_proportion
 ```
 
 **ANSWER QUESTION 1**  
-Of the `r peak_count` peaks, `r overlap_true` (`r peak_motif_proportion`%) contain a motif.
+Of the `r peak_count` peaks, `r overlap_true` (`r round(peak_motif_proportion,2)`%) contain a motif.
 
 # Question 2:
 ## Scanning the whole genome
@@ -116,7 +116,7 @@ motif_peak_proportion
 ```
 
 **ANSWER QUESTION 2**  
-Of the `r motif_count` motif sites, `r overlap_motif_true` (`r motif_peak_proportion`%) overlap a peak.
+Of the `r motif_count` motif sites, `r overlap_motif_true` (`r round(motif_peak_proportion, 2)`%) overlap a peak.
 
 # This was only for me:
 ## Enrichment Analysis
