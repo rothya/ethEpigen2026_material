@@ -97,6 +97,12 @@ sm <- signal2Matrix(tracks, moi, w=5, extend=300)
 plotEnrichedHeatmaps(sm, trim=0.95, multiScale = TRUE, axis_name = "0")
 ```
 
+Here we see the region of a motif - and the red graph shows you the occurance of ATAC fragments. 
+
+mono_center: we have two peaks corresponding to the well positioned nucleosomes right left and right to the motifs > the TF will push the nucleosomes to both sides. 
+
+NF: if the TF binds the motif > prevents Tn5 to insert there - resulting in this low coverage in the center. TF footprint. Some TF have a long residence time (= resulting in the strongest footprint) - several other TF have a low resience (will only stay bound for ms). The extent to which a TF leaves a footprint > gives you information about the residence time. 
+By looking at footprint for factors we don't know yet > can reveal motifs.
 
 ## Summarizing the signals
 
@@ -120,3 +126,4 @@ tss.sm <- epiwraps::signal2Matrix(tracks, granges(tss), w=10, extend=1000)
 epiwraps::plotEnrichedHeatmaps(tss.sm, trim=0.95, colors=c("white","darkred"), multiScale=TRUE, axis_name="TSS")
 ```
 
+mono_clusters: downstream the nucleosomes are not very well positioned > but if you go upstream, you have nucleosome peaks very clearly.
