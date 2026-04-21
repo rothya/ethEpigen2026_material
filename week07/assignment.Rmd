@@ -1,0 +1,198 @@
+---
+title: "Assignment - Week 07"
+author: "Yara Roth"
+date: "2026-04-17"
+output: html_document
+---
+
+# Setup
+
+```{r setup}
+suppressPackageStartupMessages({
+  library(motifmatchr)
+  library(MotifDb)
+  library(universalmotif)
+  library(ggplot2)
+  library(sechm)
+  library(limma)
+  library(betterChromVAR)
+  library(epiwraps)
+  library(AnnotationHub)
+  library(memes)
+  library(ensembldb)
+  library(magick)
+  library(BSgenome.Mmusculus.UCSC.mm10)
+})
+
+library(rstudioapi)
+setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
+dir.create("data")
+
+```
+
+# Part I
+To look at the accessability of the SP1 TF motif we will do the following:
+1. Generate NF and mono-nucleosome tracks from ATAC-seq data  
+2. Retrieve TF motif  
+3. Find motif sites in genome  
+4. Look at ATAC signals around the motif occurences  
+
+## Downloading ATAC-seq data from Chr19
+```{r, eval=FALSE}
+download.file("https://ethz-ins.org/content/w7/atac.chr19.bam", "data/atac.chr19.bam", mode="wb")
+download.file("https://ethz-ins.org/content/w7/atac.chr19.bam.bai", "data/atac.chr19.bam.bai", mode="wb")
+```
+
+## Preparing tracks
+```{r create-tracks}
+bam <- "data/atac.chr19.bam"
+
+# create track to look at insertion profiles of nucleosome-free fragment
+epiwraps::bam2bw(bam, output_bw = "data/NF_cuts.bw", paired=TRUE, binWidth=1L, type="ends", minFragLength=30, 
+       maxFragLength=120, trim=4L, extend=3L, forceSeqlevelsStyle = "Ensembl")
+
+# create track using the centers of mono-nucleosome fragments
+bam2bw(bam, output_bw = "data/mono_centers.bw", paired=TRUE, binWidth=5L, minFragLength=140, trim=4L,
+       maxFragLength=220, type="center", extend=10L, forceSeqlevelsStyle = "Ensembl")
+```
+
+## Obtaining sites with a SP1 or CTCF motif
+I chose to make the analysis for both CTCF and SP1, which allows to compare the footprints of both.
+
+```{r motif-sp1-ctcf}
+# we will first start by retrieving the SP1 TF motifs from the MotifDb database
+
+motif_sp1 <- MotifDb::query(MotifDb, c("SP1","Mus"))[[1]]
+motif2_sp1 <- convert_motifs(motif_sp1, class="TFBSTools-PFMatrix")
+
+motif_ctcf <- MotifDb::query(MotifDb, c("CTCF","Mus"))[[1]]
+motif2_ctcf <- convert_motifs(motif_ctcf, class="TFBSTools-PFMatrix")
+```
+
+```{r mouse-genome}
+# retrieving latest mouse genome
+ah <- AnnotationHub()
+
+query_results <- AnnotationHub::query(ah, c("Mus Musculus","TwoBitFile","101","GRCm38","primary_assembly"))
+head(query_results)
+
+genome_m <- ah[["AH84785"]]
+chr19 <- import(genome_m)["19"]
+```
+
+```{r motif-in-genome}
+# find SP1 motif matches across Chr19
+moi_sp1 <- motifmatchr::matchMotifs(motif2_sp1, chr19, out="positions", p.cutoff=1e-5)[[1]]
+moi_sp1 <- as(setNames(moi_sp1,names(chr19)), "GRanges")
+
+moi_ctcf <- motifmatchr::matchMotifs(motif2_ctcf, chr19, out="positions", p.cutoff=1e-5)[[1]]
+moi_ctcf <- as(setNames(moi_ctcf,names(chr19)), "GRanges")
+```
+
+## Plotting ATAC-signals around motifs
+### ATAC signals for CTCF motifs
+```{r, fig.width=8, fig.height=4}
+tracks <- list.files("data/", pattern="bw$", full.names=TRUE)
+names(tracks) <- gsub("\\.bw","",basename(tracks))
+
+sm_ctcf <- signal2Matrix(tracks, moi_ctcf, w=5, extend=300)
+
+plotEnrichedHeatmaps(sm_ctcf, trim=0.95, multiScale = TRUE, axis_name = "0")
+```
+
+The signals of the nucleosome-free fragments shows a very low coverage in the very center and two large peaks adjacent. The low signal in the center corresponds to the region where the TF binds (prevents TN5 insertion) = TF footprint. The two adjecent peaks indicate that the chromatin is accessbile there.  
+When looking at the signals of the mono-nucleosome fragments, we see two peaks adjecent to the motifs center. This corresponds to the nucleosomes that get pushed to the side, when the TF binds.  
+
+### ATAC signals around SP1 signals
+```{r, fig.width=8, fig.height=4}
+tracks <- list.files("data/", pattern="bw$", full.names=TRUE)
+names(tracks) <- gsub("\\.bw","",basename(tracks))
+
+sm_sp1 <- signal2Matrix(tracks, moi_sp1, w=5, extend=300)
+
+plotEnrichedHeatmaps(sm_sp1, trim=0.95, multiScale = TRUE, axis_name = "0")
+```
+
+The signals of the nucleosome-free fragments show low coverage in the center, probably corresponding to the SP1 binding site.
+Interestingly, the signal for the nucleosome-free fragments shows a gradual, continuous increase towards the side (unlike CTCF, which displayed two sharp peaks adjecent to the center). 
+For the mono-nucleosome fragments, we also see a rather gradual, continuous increase outwards. This indicates that SP1 has a weaker effect on nucleosome positioning and that the TF has a less pronounced footprint (compared to CTCF).
+
+# Part 2
+To identify motifs that are differentially acessible in between males and females in stressed vs control we do the following:  
+1. Annotate peaks with GC bias  
+2. Get a list of motifs  
+3. Scan the ATAC seq peaks for motif matches  
+4. Calculate the motif accessability deviations  
+5. Perform differential analysis
+
+## Downloading ATAC data from stressed brain
+I decided to work with the whole data (stressed and controlled). 
+```{r, eval=FALSE}
+download.file("https://ethz-ins.org/content/mouse_mm38_hippocampus.peakCounts.SE.rds", "data/peakCounts.rds", mode="wb")
+```
+
+```{r}
+se <- readRDS("data/peakCounts.rds")
+```
+
+## Annotate regions
+```{r annotation}
+se <- GenomeInfoDb::keepStandardChromosomes(se, pruning.mode = "coarse")
+seqlevelsStyle(se) <- "UCSC"
+se <- addGCBias(se, genome=BSgenome.Mmusculus.UCSC.mm10)
+```
+
+## Motif matches
+I will use the motif list from MotifDb. 
+```{r motif-list}
+motifs <- MotifDb::query(MotifDb, "HOCOMOCOv13")
+```
+
+Then we convert the motifs that they get accepted from motifmatchr.
+
+```{r, message=FALSE}
+motifs <- do.call(TFBSTools::PWMatrixList, convert_motifs(motifs, class="TFBSTools-PWMatrix"))
+names(motifs) <- make.unique(sapply(motifs, \(x) gsub("\\..+","",x@name)))
+```
+
+And now we will scan the ATAC peaks for motif matches.
+
+```{r motif-matches}
+matches <- motifmatchr::matchMotifs(motifs, se, genome=BSgenome.Mmusculus.UCSC.mm10)
+matches
+```
+
+## Get motif deviations
+Now we will get the motif deviations, showing the realtive accessibility of each motif in each sample.
+
+```{r motif-deviations}
+dev <- betterChromVAR(se, matches)
+dev
+```
+
+## Differential Analysis
+As i used the complete dataset (containing both stressed and control) we should ideally account for condition as a covariate. 
+
+```{r assign-groups}
+dev$condition <- ifelse(grepl("FSS", colnames(dev)), "Stressed", "Control")
+dev$sex <- ifelse(grepl("female", colnames(dev)), "female", "male")
+dev
+```
+
+```{r differential-expression}
+# fit model with sex as main effect and condition as covariate
+design <- model.matrix(~sex + condition, data=as.data.frame(colData(dev)))
+
+fit <- eBayes(lmFit(assay(dev, "z"), design))
+res <- as.data.frame(topTable(fit, coef=2, number = Inf))
+res$motif <- row.names(res)
+ggplot(res, aes(logFC, -log10(adj.P.Val), label=motif)) + geom_text()
+```
+
+On the following heatmap we see the motifs that show the largest differences regarding their accessability in males compared to females.
+
+
+```{r heatmap}
+sechm(dev, head(row.names(res)), gaps_at="sex", assayName = "z")
+```
+
