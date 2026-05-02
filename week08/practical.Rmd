@@ -146,7 +146,8 @@ bs <- BSmooth(bs, BPPARAM=MulticoreParam(4, progress=TRUE))
 
 ```{r}
 # we get the chr1 promoters for this genome:
-genes <- readRDS("hg19_chr1_genes.rds")
+genes <- 
+
 proms <- promoters(genes)
 
 # we extract the promoters of genes of interest:
@@ -189,12 +190,14 @@ saveRDS(dmrRanges, "dmr.rds")
 ggplot(as.data.frame(dmrRanges), aes(meandiff, -log10(HMFDR), colour=width, size=no.cpgs)) + geom_point()
 
 dmrRanges <- dmrRanges[order(abs(dmrRanges$meandiff), decreasing=TRUE)]
+options(timeout = 600)
 DMR.plot(dmrRanges, dmr=2, phen.col=rep(c("blue","darkred"), each=2), 
          arraytype="450K", # because of a bug in the newest version of DMRcate, we need to specify the array type here, even though we are working with BSseq data
          CpGs=bs, genome="hg19")
 ```
 
 ```{r}
+options(timeout=600)
 bsseq::plotRegion(bs, region = dmrRanges[2], extend=1000, col=rep(c("darkblue","darkred"),each=2))
 ```
 
