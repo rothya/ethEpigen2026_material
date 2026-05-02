@@ -1,0 +1,161 @@
+---
+title: "Assignment - Week 08"
+author: "Yara Roth"
+date: "2026-04-29"
+output: html_document
+---
+
+# Setup
+
+```{r setup}
+suppressPackageStartupMessages({
+  library(epiwraps)
+  library(ggplot2)
+  library(AnnotationHub)
+  library(ensembldb)
+  library(edgeR)
+  library(rtracklayer)
+  library(BiocParallel)
+  library(bsseq)
+  library(DMRcate)
+})
+
+library(rstudioapi)
+setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
+dir.create("data")
+```
+
+# Methylation level of Genes in top 5 DMRs (Question 1)
+To look at the methylation levels of the genes that are located within the top 5 DMR I will do the following approach:  
+1.) Extract the DMRs - meaninig regions where CpG methylation is significantly different between ESC and astrocytes  
+2.) Rank DMRs  
+3.) Find the genes that overlap with these 5 DMR regions  
+4.) Plot the heatmap - showing the methylation of these genes in each sample
+
+```{r, download, eval=FALSE}
+options(timeout = 6000)
+download.file("https://ethz-ins.org/content/w11_practical.zip", "data/w08_practical.zip")
+unzip("data/w08_practical.zip", exdir="data")
+```
+
+First we will load the BSseq object that contains the bisulfite sequencing data from ESC and astrocytes and create the design matrix. 
+
+```{r design-matrix}
+bs <- readRDS("data/ESC_astrocytes_BSseq.rds")
+
+# remove CpGs with zero coverage
+bs <- bs[rowSums(assay(bs,"Cov")>0)==ncol(bs),]
+
+# create design matrix 
+design <- model.matrix(~celltype, data=pData(bs))
+methdesign <- modelMatrixMeth(design)
+bs <- BSmooth(bs, BPPARAM=MulticoreParam(4, progress=FALSE))
+bs
+```
+
+Then we will first run the statistical test on each CpG position to identify the individual CpGs that are significantly different methylated between ESC and astrocytes.
+
+```{r stat-individual}
+seqAnnot <- sequencing.annotate(bs, methdesign, all.cov=TRUE, coef="celltypeastrocytes")
+```
+
+Then we use dmrcate to cluster the individual CpGs (that are significantly different methylated in between ESC and astrocytes) together in regions.
+
+```{r DMR}
+dmrcateRes <- dmrcate(seqAnnot, C=2, min.cpgs=5)
+dmrRanges <- extractRanges(dmrcateRes, genome="hg19")
+dmrRanges
+```
+
+Now we will extract the DMR located in chromosome 1 and select only the top 5.
+```{r top-DMR}
+dmr_top <- dmrRanges[seqnames(dmrRanges) == "chr1"]
+dmr_top <- dmr_top[order(dmr_top$HMFDR)[1:5]]
+# dmr_top_2 <- dmr_top[order(dmr_top$meandiff)[1:5]]
+```
+
+In the next step we will extract the genes that overlap the DMR and plot their methylation levels in a heatmap. 
+
+```{r genes-DMR}
+genes <- readRDS("data/hg19_chr1_genes.rds")
+genes_dmr <- subsetByOverlaps(genes, dmr_top, ignore.strand=TRUE, type="any")
+genes_dmr
+
+met <- getMeth(bs, regions=genes_dmr, what="perRegion")
+rownames(met) <- genes_dmr$symbol
+pheatmap(met, name="gene\nmethylation",main="Methylation of Genes located in top 5 DMRs of Chr1")
+```
+
+Interestingly, when I look at the overlapping genes of the ``dmr_top`` object, I see three genes, namely CR1L, CD46P1, and RP11-431K24.1. However, only CR1L can be found in the hg19 genes.
+That is also the reason that only one gene is visible on the heatmap, when using the ``subsetByOverlaps()`` function.
+
+## Methylation and ATAC comparison (Question 2)
+
+First we will download the ATAC data. This file contains differentially accessible regions in between ESC and astrocytes. 
+
+```{r, download-atac, eval=FALSE}
+download.file("https://www.ethz-ins.org/content/ATAC_AstroVsESC_subset.rds", "data/ATAC_AstroVsESC_subset.rds")
+```
+
+Then we will load both DMRs and ATAC datasets.
+```{r load-datasets}
+dmr <- readRDS("dmr.rds")
+atac <- readRDS("data/ATAC_AstroVsESC_subset.rds")
+```
+
+Fist, I will get if we have ovelraps between DMRs and ATAC peaks. 
+
+```{r DMR-ATAC-genes-overlaps}
+overlaps <- findOverlaps(dmr, atac)
+overlapping_dmrs <- dmr[queryHits(overlaps)]
+overlapping_atac <- atac[subjectHits(overlaps)]
+
+pct_dmr <- round(length(unique(queryHits(overlaps))) / length(dmr) * 100, 2)
+pct_atac <- round(length(unique(subjectHits(overlaps))) / length(atac) * 100, 2)
+
+cat("DMRs overlapping with ATAC peaks:", pct_dmr, "%\n")
+cat("ATAC peaks overlapping with DMRs:", pct_atac, "%\n")
+cat("Total overlapping regions:", length(overlaps), "\n")
+```
+
+All ATAC peaks overlapp with the DMRs, and 97.64% of DMRS overlap with the ATAC peaks. Meaning that these two modalities show a very high agreement.  
+
+To further quantify this agreement, we can calculate the correlation between the two effect sizes (logFC for ATAC and meandiff for DMR). This allows us to see if hypomethylation is actually associated with more accessible chromatin or not.
+
+If logFC (from the ATAC data) is > 0, the chromatin is more accesible in astrocytes compared to ESC.  
+
+If the meandiff (from the DMR data) is > 0, the DNA is more methylated in the astrocytes compared to ESC.  
+
+We would expect more accesible chromatin to correlate with hypomethylated DNA. And less accesible chromatin with hypermethylated DNA.  
+Therefore the top-left quadrant and bottom right quadrant are in agreement.
+
+```{r DMR-ATAC-agreement}
+corr_df <- data.frame(
+  meandiff = overlapping_dmrs$meandiff,
+  logFC = overlapping_atac$logFC
+)
+
+# Add agreement status (green if concordant)
+corr_df$agreement <- ((corr_df$meandiff < 0 & corr_df$logFC > 0) | 
+                      (corr_df$meandiff > 0 & corr_df$logFC < 0))
+
+cor(corr_df$meandiff, corr_df$logFC)
+
+ggplot(corr_df, aes(meandiff, logFC, color = agreement)) + 
+  geom_point(size = 3) + 
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black") + 
+  geom_hline(yintercept = 0, linetype = "dashed", color = "black") +
+  scale_color_manual(values = c("FALSE" = "grey", "TRUE" = "coral3"), guide = "none") +
+  labs(title = "Agreement differential methylation and chromatin accessibility",
+       x = "Methylation change (meandiff)", 
+       y = "Accessibility change (logFC)") +
+  theme_classic() +
+  theme(plot.title = element_text(size = 14, face = "bold", hjust = 0.5),
+        axis.title = element_text(size = 12, face = "bold"),
+        axis.text = element_text(size = 10))
+```
+
+We can see that the largest proportion of points are located in the top-left and bottom right quadrants, indicating an agreement between changes in methylation and accesiblity in the majority of the region.  
+- hypermethylation <-> less accesible chromatin  
+- hypomethylation <-> more accesible chromatin  
+However, a notable fraction of datapoints are located located in the non-agreeing quadrants. This could indicate that these regions regulate their accessbility over other regulatory mechanism than methylation.  
