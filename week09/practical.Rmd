@@ -13,6 +13,10 @@ suppressPackageStartupMessages({
 })
 ```
 
+```{r}
+BiocManager::install("rGREAT", force = TRUE)
+```
+
 Today we're going to work on ChIP-seq of 2 TFs and 2 histone modifications in a mouse cancer line (all restricted to chr1).
 
 ## Download the data
@@ -86,6 +90,7 @@ cl2 <- clusterSignalMatrices(ese, k=2:10)
 ggplot(cl2$varExplained, aes(k, varExplained)) + geom_line()
 ```
 
+With more clusters, we explain more of the variance. But at some point we have a plateau. Here we would chose something in between 3-4. We cluster with a too large number of clusters - then we scale down the number of clusers (unfortunately very hard to do it automatically). 
 
 
 Plotting just the averages:
@@ -96,7 +101,10 @@ ggplot(d, aes(position, mean, colour=sample)) + geom_line(size=1.2) + facet_wrap
 ```
 
 
+Difference of cluster 1 and 4: difference in magnitude of signal could also be due to technical artifacts. So what we do: normalize the rows before clustering.
 
+We can also perform enrichment analysis (before normalization) and see whether the cluster 1 and 4 actually differ frome ach other -> if not, probably due to technical artifacts. And then we go for the clusters obtained with normalization. 
+Normalization: we normalize the rows (max value of one row is set to the max value of another row)
 
 Clustering using relative signal instead:
 
@@ -111,7 +119,28 @@ plotEnrichedHeatmaps(ese, row_split = cl, scale_rows = "global")
 
 ## Enrichment analysis
 
+Some regions in the genome are bound by MAFK + are inactive. 
+Some regions are bount by p300 and acethylated etc...
+So now we can characterize these regions ->
+what kind of genes are near by? 
+what CHIP-signals are near by?
+
 Find what's enriched in one cluster with respect to the others:
+First we are goung to take the genomic regions and split them by clusters. So the split_regions contains 4 lists with the genomic regions per cluster.
+
+And then we can see which clusters show increased in genes that are in certain functional categories. E.g cluster 1 shows twice as much gene regions that are important for e.g response to unfolded protein.
+
+First question: 
+Gene ontology annotates genes with functional categories
+- biological processes
+- molecular processes
+- cellular components
+
+What GEAT does: 
+starts with gene regulating domain of a gene, then considers the gene body to be part of regulatory domain. Then it will extend the region until it will encounter another reglatory element (of another gene).
+So it assignes regions to genes in a weighted fassion -> binding/peak that is present in the regulatory domain is more important, than binding happening far away. 
+
+Here we compare cluster 3 compared to the others? 
 
 ```{r}
 # we first split the regions by cluster:
@@ -133,3 +162,4 @@ ggplot(head(bp,15), aes(fold_enrichment, reorder(description, p_adjust),
   geom_point() + scale_color_viridis_c()
 ```
 
+3 TF (Creb1, Creb3 and Creb3L1). Look similar when looking at the 
