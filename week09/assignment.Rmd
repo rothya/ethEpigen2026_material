@@ -1,0 +1,137 @@
+---
+title: "Assignment - Week 09"
+author: "Yara Roth"
+date: "2026-05-10"
+output: html_document
+---
+
+# Setup
+
+```{r setup}
+suppressPackageStartupMessages({
+  library(GenomicRanges)
+  library(epiwraps)
+  library(ggplot2)
+  library(rGREAT)
+})
+
+library(rstudioapi)
+setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
+dir.create("data")
+```
+
+# Download
+```{r, eval=FALSE}
+options(timeout = 6000)
+download.file("https://ethz-ins.org/content/clustering_assignment.zip", "data/clustering_assignment.zip")
+unzip("data/clustering_assignment.zip", exdir="data")
+list.files()
+```
+
+## Prepare regions
+```{r region-preparation}
+peaks <- list.files(path="data",pattern="bed$", full.names=TRUE)
+# we first import the peaks
+peaks <- lapply(peaks, rtracklayer::import.bed)
+# we'll focus on the high-quality peaks
+peaks <- lapply(peaks, FUN=function(x) x[x$score>800])
+# we get the union of non-redundant regions
+regions <- reduce(unlist(GRangesList(peaks)))
+```
+
+## Prepare the tracks
+```{r tracks-preparation}
+tracks <- list.files(path="data", pattern="bw$", full.names=TRUE)
+```
+
+## Heatmap signal signal matrix 
+Now we can look at the signals of Creb1, Creb3 and Creb3L in the heatmap.
+
+```{r}
+ese <- signal2Matrix(tracks, regions, extend=2000)
+
+plotEnrichedHeatmaps(ese)
+ese2 <- ese[1:1000,]
+```
+
+Here the signals of the three TF look very similar.  
+
+Now we can look at the signals again using the implemented clusering of the plotEnrichedHeatmaps function. 
+This i smainly used for exploratory purposes, as the regions are not assigned to discrete clusters. 
+
+```{r clustering-plotenrichment}
+ese2 <- ese[1:1000,]
+plotEnrichedHeatmaps(ese2, cluster_rows = TRUE, show_row_dend=TRUE )
+```
+
+In a next step we can perform clustering independently:
+
+```{r clusering}
+set.seed(10)
+cl <- clusterSignalMatrices(ese, k=4)
+table(cl)
+head(cl)
+length(cl)
+nrow(ese)
+
+# to make sure the cluster labels stay associated with the corresponding regions/rows
+# even if we manipulate the object, put them inside the rowData of the object:
+rowData(ese)$cluster <- cl
+head(rowData(ese))
+```
+
+```{r plot-clustered}
+plotEnrichedHeatmaps(ese, row_split=rowData(ese)$cluster, 
+                     colors=c("white","darkred"))
+```
+
+Next we need to decide on the number of clusters that we are going to use. Therefore we can look at the number of clusters and the variance that they explain: 
+
+```{r nr-clusters}
+cl2 <- clusterSignalMatrices(ese, k=2:15)
+ggplot(cl2$varExplained, aes(k, varExplained)) + geom_line()
+```
+
+Here we see that with more clusters, we can explain a higher variance. But at some point we have a plateau. I will start with 6 (which is rather high i think -> explain 94% of the variance) and then scale down the number of clusers if I see that they seem very similar. As discussed in the lecture it is hart do select the number of clusters automatically/objectively. 
+
+
+As discussed in the lecture it is possible that some clusers mainly differ due to differences in the signal magnitude -> this could result from technical artifacts.  
+Therefore we can normalize the signal intensity before performing the clustering -> perform clustering using relative signals instead: 
+
+```{r clustering-relative}
+set.seed(10)
+cl <- clusterSignalMatrices(ese, k=6, scaleRows = TRUE)
+d <- meltSignals(ese, splitBy=cl)
+ggplot(d, aes(position, mean, colour=sample)) + geom_line() + facet_wrap(~split)
+plotEnrichedHeatmaps(ese, row_split = cl, scale_rows = "global")
+```
+
+With this clustering we can now clearly see that there is a difference in the binding of these three TF. There are regions where mainly Creb1, Creb3 or Creb3L bind individually.  
+We also see that there are regions where Creb3 and Creb3L bind together and regions where Creb1 and Creb3L bind together. 
+
+With this clustering we can now clearly distinct binding patterns. There are reginos where each TF (predominantely) binds alone. There are also regions where we have co-binding:  
+- Creb3 and Creb3L  
+- Creb1 and Creb3  
+
+## Enrichment Analysis
+In the next step, we perform enrichment analysis on each cluster to identify if functional categories are overrepresented (using gene ontology).  
+
+I decided to look at cluster 2, because it shows prominent Creb1 binding but little to no Creb3/Creb3L binding.
+
+```{r enrichment-anal}
+split_regions <- split(rowRanges(ese), rowData(ese)$cluster)
+lengths(split_regions)
+
+res <- great(split_regions[["2"]], gene_sets="GO:BP", tss_source="hg38", 
+             background=regions, cores=2)
+bp <- getEnrichmentTables(res)
+head(bp)
+```
+
+```{r, fig.width=9, fig.height=6}
+ggplot(head(bp,15), aes(fold_enrichment, reorder(description, p_adjust), 
+                        size=observed_region_hits, color=-log10(p_adjust))) + 
+  geom_point() + scale_color_viridis_c()
+```
+
+Cluster 2 shows prominent Creb1 binding but little to no Creb3/Creb3L binding. Cluster 2 shows the stronges enrichment for cytoskeletal reorganization and cell motility processes. Additionally, we also have enrichment in neurogenesis and developmental processes. This suggests that compared to Creb3 and Creb3L, Creb1 might be specifically required for inducing genes that control cell migration and neural development. 
