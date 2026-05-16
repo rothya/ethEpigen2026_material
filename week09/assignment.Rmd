@@ -134,4 +134,4 @@ ggplot(head(bp,15), aes(fold_enrichment, reorder(description, p_adjust),
   geom_point() + scale_color_viridis_c()
 ```
 
-Cluster 2 shows prominent Creb1 binding but little to no Creb3/Creb3L binding. Cluster 2 shows the stronges enrichment for cytoskeletal reorganization and cell motility processes. Additionally, we also have enrichment in neurogenesis and developmental processes. This suggests that compared to Creb3 and Creb3L, Creb1 might be specifically required for inducing genes that control cell migration and neural development. 
+Cluster 2 shows prominent Creb1 binding but little to no Creb3/Creb3L binding. Cluster 2 shows the strongest enrichment for cytoskeletal reorganization and cell motility processes (compared to the union of all high-confidence peaks of all three TFs combined). Additionally, we also have enrichment in neurogenesis and developmental processes. This suggests that compared to Creb3 and Creb3L, Creb1 might be specifically required for inducing genes that control cell migration and neural development. 
